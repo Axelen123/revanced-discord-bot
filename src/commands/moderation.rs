@@ -7,7 +7,7 @@ use poise::serenity_prelude::{
     PermissionOverwrite,
     Permissions,
     RoleId,
-    User, Mentionable,
+    User, Mentionable, CreateApplicationCommandOption,
 };
 use tracing::log::error;
 use tracing::{debug, warn, trace};
@@ -472,10 +472,43 @@ pub async fn ban(
     handle_ban(&ctx, &BanKind::Ban(user, dmd, reason)).await
 }
 
+use serenity::UserId;
+
+#[derive(Clone, Copy, Debug)]
+pub struct UserIdHack(UserId);
+
+#[serenity::async_trait]
+impl poise::SlashArgument for UserIdHack {
+    async fn extract<'a, 'b, 'c>(ctx: &'a serenity::Context, interaction: poise::ApplicationCommandOrAutocompleteInteraction<'b>, value: &'c serenity::json::Value) -> Result<Self, poise::SlashArgError> {
+        match poise::extract_slash_argument!(serenity::User, ctx, interaction, value).await {
+            Err(poise::SlashArgError::Parse { input, error }) => {
+                // The normal parser will error if it parses a UserId, but does not share a guild with the user.
+                // We do not want this so we have to try to parse it ourselves if the normal parser errors.
+                if let Some(user_id) = input.parse::<u64>().ok() {
+                    Ok(UserIdHack(UserId(user_id)))
+                } else {
+                    Err(poise::SlashArgError::Parse { error, input })
+                }
+            },
+            v => v.map(|user| UserIdHack(user.id)),
+        }
+    }
+
+    fn create(builder: &mut CreateApplicationCommandOption) {
+        poise::create_slash_argument!(serenity::User, builder)
+    }
+
+    fn choices() -> Vec<poise::CommandParameterChoice> {
+        poise::slash_argument_choices!(serenity::User)
+    }
+}
+
 /// Unban a user.
 #[poise::command(slash_command)]
-pub async fn unban(ctx: Context<'_>, #[description = "User"] user: User) -> Result<(), Error> {
-    handle_ban(&ctx, &BanKind::Unban(user)).await
+pub async fn unban(ctx: Context<'_>, #[description = "User"] user: UserIdHack) -> Result<(), Error> {
+    ctx.send(|m| m.content(user.0.to_string())).await?;
+    Ok(())
+    // handle_ban(&ctx, &BanKind::Unban(user)).await
 }
 
 async fn handle_ban(ctx: &Context<'_>, kind: &BanKind) -> Result<(), Error> {
