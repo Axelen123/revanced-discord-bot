@@ -506,6 +506,7 @@ impl poise::SlashArgument for UserIdHack {
 /// Unban a user.
 #[poise::command(slash_command)]
 pub async fn unban(ctx: Context<'_>, #[description = "User"] user: UserIdHack) -> Result<(), Error> {
+    println!("{:?}", UserId(737323631117598811).to_user(&ctx.discord().http).await);
     ctx.send(|m| m.content(user.0.to_string())).await?;
     Ok(())
     // handle_ban(&ctx, &BanKind::Unban(user)).await

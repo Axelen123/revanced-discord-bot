@@ -19,7 +19,7 @@ panic = "abort"
 bson = "2.4"
 serde_with_macros = "2.0"
 mongodb = "2.3"
-poise = "0.3"
+poise = "0.5"
 decancer = "1.4"
 tokio = { version = "1.20", features = ["rt-multi-thread"] }
 dotenv = "0.15"

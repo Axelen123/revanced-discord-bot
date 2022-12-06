@@ -5,9 +5,10 @@
 	"version": "0.2.0",
 	"configurations": [
 		{
-			"type": "lldb",
+			"type": "gdb",
 			"request": "launch",
 			"name": "Debug executable 'revanced-discord-bot'",
+			"target": "./target/debug/revanced-discord-bot",
 			"cargo": {
 				"args": [
 					"build",

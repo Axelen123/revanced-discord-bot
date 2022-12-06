@@ -138,12 +138,12 @@ async fn main() {
                     Ok(true)
                 })
             }),
-            listener: |_ctx, event, _framework, _data| {
-                Box::pin(async move {
-                    tracing::trace!("{:?}", event.name());
-                    Ok(())
-                })
-            },
+            // listener: |_ctx, event: _, _framework, _data| {
+            //     Box::pin(async move {
+            //         tracing::trace!("{:?}", event.name());
+            //         Ok(())
+            //     })
+            // },
             ..Default::default()
         },
         data.clone(), // Pass configuration as user data for the framework
