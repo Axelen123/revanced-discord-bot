@@ -2,23 +2,15 @@ use bson::{doc, Document};
 use chrono::{Duration, Utc};
 use mongodb::options::{UpdateModifications, UpdateOptions};
 use poise::serenity_prelude::{
-    self as serenity,
-    Member,
-    PermissionOverwrite,
-    Permissions,
-    RoleId,
-    User, Mentionable,
+    self as serenity, Mentionable, PermissionOverwrite, Permissions, UserId,
 };
 use tracing::log::error;
-use tracing::{debug, warn, trace};
+use tracing::{debug, trace};
 
 use crate::db::model::{LockedChannel, Muted};
+use crate::utils::macros::to_user;
 use crate::utils::moderation::{
-    ban_moderation,
-    queue_unmute_member,
-    respond_moderation,
-    BanKind,
-    ModerationKind,
+    ban_moderation, queue_unmute_member, respond_moderation, BanKind, ModerationKind,
 };
 use crate::{Context, Error};
 
@@ -97,11 +89,14 @@ pub async fn lock(ctx: Context<'_>) -> Result<(), Error> {
         let permission = Permissions::SEND_MESSAGES & Permissions::ADD_REACTIONS;
 
         if let Err(err) = channel
-            .create_permission(http, &PermissionOverwrite {
-                allow: permission_overwrite.allow & !permission,
-                deny: permission_overwrite.deny | permission,
-                kind: permission_overwrite.kind,
-            })
+            .create_permission(
+                http,
+                &PermissionOverwrite {
+                    allow: permission_overwrite.allow & !permission,
+                    deny: permission_overwrite.deny | permission,
+                    kind: permission_overwrite.kind,
+                },
+            )
             .await
         {
             error!("Failed to create the new permission: {:?}", err);
@@ -143,7 +138,7 @@ pub async fn unlock(ctx: Context<'_>) -> Result<(), Error> {
     let channel = cache.guild_channel(channel_id).unwrap();
 
     let author = ctx.author();
-    
+
     let mut error = None;
     if let Ok(Some(locked_channel)) = delete_result {
         for overwrite in &locked_channel.overwrites.unwrap() {
@@ -165,15 +160,15 @@ pub async fn unlock(ctx: Context<'_>) -> Result<(), Error> {
 #[poise::command(slash_command)]
 pub async fn unmute(
     ctx: Context<'_>,
-    #[description = "The member to unmute"] member: Member,
+    #[description = "The member to unmute"] member: UserId,
 ) -> Result<(), Error> {
     ctx.defer().await.expect("Failed to defer");
 
     let data = &ctx.data().read().await;
     let configuration = &data.configuration;
 
-    if let Some(pending_unmute) = data.pending_unmutes.get(&member.user.id.0) {
-        trace!("Cancelling pending unmute for {}", member.user.id.0);
+    if let Some(pending_unmute) = data.pending_unmutes.get(&member.0) {
+        trace!("Cancelling pending unmute for {}", member);
         pending_unmute.abort();
     }
 
@@ -181,8 +176,10 @@ pub async fn unmute(
 
     let queue = queue_unmute_member(
         &ctx.discord().http,
+        &ctx.discord().cache,
         &data.database,
-        &member,
+        ctx.guild_id().unwrap(),
+        member,
         configuration.general.mute.role,
         0,
     )
@@ -191,7 +188,7 @@ pub async fn unmute(
 
     respond_moderation(
         &ctx,
-        &ModerationKind::Unmute(member.user, author.clone(), queue),
+        &ModerationKind::Unmute(to_user!(member, ctx), author.clone(), queue),
         configuration,
     )
     .await
@@ -202,7 +199,7 @@ pub async fn unmute(
 #[poise::command(slash_command)]
 pub async fn mute(
     ctx: Context<'_>,
-    #[description = "The member to mute"] mut member: Member,
+    #[description = "The member to mute"] member: UserId,
     #[description = "Seconds"] seconds: Option<i64>,
     #[description = "Minutes"] minutes: Option<i64>,
     #[description = "Hours"] hours: Option<i64>,
@@ -210,6 +207,7 @@ pub async fn mute(
     #[description = "Months"] months: Option<i64>,
     #[description = "The reason of the mute"] reason: String,
 ) -> Result<(), Error> {
+    let member = to_user!(member, ctx);
     let now = Utc::now();
     let mut mute_duration = Duration::zero();
 
@@ -240,103 +238,80 @@ pub async fn mute(
 
     let data = &mut *ctx.data().write().await;
     let configuration = &data.configuration;
-    let mute = &configuration.general.mute;
-    let mute_role_id = mute.role;
-    let take = &mute.take;
-    let is_currently_muted = member.roles.iter().any(|r| r.0 == mute_role_id);
-
     let author = ctx.author();
 
-    let result =
-        if let Err(add_role_result) = member.add_role(&ctx.discord().http, mute_role_id).await {
-            Some(Error::from(add_role_result))
-        } else {
-            // accumulate all roles to take from the member
-            let removed_roles = member
-                .roles
-                .iter()
-                .filter(|r| take.contains(&r.0))
-                .map(|r| r.to_string())
-                .collect::<Vec<_>>();
-            // take them from the member, get remaining roles
-            let remaining_roles = member
-                .remove_roles(
-                    &ctx.discord().http,
-                    &take.iter().map(|&r| RoleId::from(r)).collect::<Vec<_>>(),
-                )
-                .await;
+    let mute = &configuration.general.mute;
+    let guild_id = ctx.guild_id().unwrap();
 
-            if let Err(remove_role_result) = remaining_roles {
-                Some(Error::from(remove_role_result))
-            } else {
-                // Roles which were removed from the user
-                let updated: Document = Muted {
-                    guild_id: Some(member.guild_id.0.to_string()),
-                    expires: Some(unmute_time.timestamp() as u64),
-                    reason: Some(reason.clone()),
-                    taken_roles: if is_currently_muted {
-                        // Prevent the bot from overriding the "take" field.
-                        // This would happen otherwise, because the bot would accumulate the users roles and then override the value in the database
-                        // resulting in the user being muted to have no roles to add back later.
-                        None
-                    } else {
-                        Some(removed_roles)
-                    },
+    let mut updated = Muted {
+        guild_id: Some(guild_id.0.to_string()),
+        expires: Some(unmute_time.timestamp() as u64),
+        reason: Some(reason.clone()),
+        ..Default::default()
+    };
+
+    let mut error = None;
+
+    if let Some(mut guild_member) = ctx.discord().cache.member(guild_id, member.id) {
+        match crate::utils::moderation::mute_moderation(&ctx, &mut guild_member, mute).await {
+            Ok((is_currently_muted, removed_roles)) => {
+                // Prevent the bot from overriding the "take" field.
+                // This would happen otherwise, because the bot would accumulate the users roles and then override the value in the database
+                // resulting in the user being muted to have no roles to add back later.
+                if !is_currently_muted {
+                    updated.taken_roles = Some(removed_roles.iter().map(ToString::to_string).collect());
+                }
+            },
+            Err(v) => error = Some(Error::from(v)),
+        }
+    }
+
+    if error.is_none() {
+        let updated: Document = updated.into();
+        if let Err(e) = data
+            .database
+            .update::<Muted>(
+                "muted",
+                Muted {
+                    user_id: Some(member.id.to_string()),
                     ..Default::default()
                 }
-                .into();
+                .into(),
+                UpdateModifications::Document(doc! { "$set": updated }),
+                Some(UpdateOptions::builder().upsert(true).build()),
+            )
+            .await
+        {
+            error = Some(e);
+        }
+    }
 
-                if let Err(database_update_result) = data
-                    .database
-                    .update::<Muted>(
-                        "muted",
-                        Muted {
-                            user_id: Some(member.user.id.0.to_string()),
-                            ..Default::default()
-                        }
-                        .into(),
-                        UpdateModifications::Document(doc! { "$set": updated}),
-                        Some(UpdateOptions::builder().upsert(true).build()),
-                    )
-                    .await
-                {
-                    Some(database_update_result)
-                } else {
-                    None
-                }
-            }
-        };
-
-    if let Some(pending_unmute) = data.pending_unmutes.get(&member.user.id.0) {
-        trace!("Cancelling pending unmute for {}", member.user.id.0);
+    if let Some(pending_unmute) = data.pending_unmutes.get(&member.id.0) {
+        trace!("Cancelling pending unmute for {}", member.id.0);
         pending_unmute.abort();
     }
 
     data.pending_unmutes.insert(
-        member.user.id.0,
+        member.id.0,
         queue_unmute_member(
             &ctx.discord().http,
+            &ctx.discord().cache,
             &data.database,
-            &member,
-            mute_role_id,
+            guild_id,
+            member.id,
+            mute.role,
             mute_duration.num_seconds() as u64,
         ),
     );
 
-    if result.is_none() {
-        if let Err(e) = member.disconnect_from_voice(&ctx.discord().http).await {
-            warn!("Could not disconnect member from voice channel: {}", e);
-        }
-    }
-
     respond_moderation(
         &ctx,
         &ModerationKind::Mute(
-            member.user,
+            member,
             author.clone(),
             reason,
             format!("<t:{}:F>", unmute_time.timestamp()),
-            result,
+            error,
         ),
         configuration,
     )
@@ -347,13 +322,18 @@ pub async fn mute(
 #[poise::command(slash_command)]
 pub async fn purge(
     ctx: Context<'_>,
-    #[description = "User"] user: Option<User>,
+    #[description = "User"] user: Option<UserId>,
     #[description = "Until message"] until: Option<String>,
     #[min = 1]
     #[max = 1000]
     #[description = "Count"]
     count: Option<i64>,
 ) -> Result<(), Error> {
+    let user = if let Some(id) = user {
+        Some(to_user!(id, ctx))
+    } else {
+        None
+    };
     // The maximum amount of times to page through messages. If paged over MAX_PAGES amount of times without deleting messages, break.
     const MAX_PAGES: i8 = 2;
     // The maximal amount of messages that we can fetch at all
@@ -450,10 +430,9 @@ pub async fn purge(
                     .color(embed_color)
                     .thumbnail(&image)
                     .footer(|f| {
-                            f.text("ReVanced");
-                            f.icon_url(image)
-                        }
-                    )
+                        f.text("ReVanced");
+                        f.icon_url(image)
+                    })
                     .clone(),
             )
         })
@@ -465,16 +444,19 @@ pub async fn purge(
 #[poise::command(slash_command)]
 pub async fn ban(
     ctx: Context<'_>,
-    #[description = "User"] user: User,
+    #[description = "User"] user: UserId,
     #[description = "Amount of days to delete messages"] dmd: Option<u8>,
     #[description = "Reason for the ban"] reason: Option<String>,
 ) -> Result<(), Error> {
+    // We cannot use `User` as a parameter for the moderation commands because of a bug in serenity. See: https://github.com/revanced/revanced-discord-bot/issues/38
+    let user = to_user!(user, ctx);
     handle_ban(&ctx, &BanKind::Ban(user, dmd, reason)).await
 }
 
 /// Unban a user.
 #[poise::command(slash_command)]
-pub async fn unban(ctx: Context<'_>, #[description = "User"] user: User) -> Result<(), Error> {
+pub async fn unban(ctx: Context<'_>, #[description = "User"] user: UserId) -> Result<(), Error> {
+    let user = to_user!(user, ctx);
     handle_ban(&ctx, &BanKind::Unban(user)).await
 }
 
