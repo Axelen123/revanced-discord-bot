@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use poise::serenity_prelude::{self as serenity, Mutex, RwLock, ShardManager, UserId};
+use poise::serenity_prelude::{self as serenity, Mutex, RwLock, ShardManager, UserId, GuildChannel};
 use tracing::log::error;
 
 use crate::{Data, Error};
@@ -72,6 +72,10 @@ impl serenity::EventHandler for Handler<Arc<RwLock<Data>>> {
             new_message,
         })
         .await;
+    }
+
+    async fn thread_update(&self, ctx: serenity::Context, thread: GuildChannel) {
+        println!("YAYY I GOT IT!, {}", thread);
     }
 
     async fn message_update(

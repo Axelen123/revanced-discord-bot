@@ -1,6 +1,7 @@
-use std::cmp;
+use std::cmp::{max, min};
 use std::sync::Arc;
 
+use chrono::Utc;
 use mongodb::options::FindOptions;
 use poise::serenity_prelude::{ChannelId, GuildChannel, GuildId, Mentionable, User, UserId};
 use tokio::task::JoinHandle;
@@ -335,7 +336,7 @@ pub async fn ban_moderation(ctx: &Context<'_>, kind: &BanKind) -> Option<Serenit
                 .ban_user(
                     guild_id,
                     user.id.0,
-                    cmp::min(dmd.unwrap_or(0), 7),
+                    min(dmd.unwrap_or(0), 7),
                     reason.as_ref(),
                 )
                 .await;
@@ -360,17 +361,68 @@ pub async fn ban_moderation(ctx: &Context<'_>, kind: &BanKind) -> Option<Serenit
     }
 }
 
+pub async fn sync_mute_state(ctx: &serenity::Context, db: &Database, config: &Mute) -> Result<(), Error>{
+    Ok(())
+}
+
+async fn sync_mute_state_one(ctx: &serenity::Context, db: &Database, db_ref: Option<Muted>, user_id: UserId, config: &Mute) -> Result<(), Error> {
+    let now = Utc::now();
+    let query = Muted {
+        user_id: Some(user_id.0.to_string()),
+        ..Default::default()
+    };
+    let db_ref = if db_ref.is_some() {
+        db_ref
+    } else {
+        db.find_one("muted", query.into(), None).await?
+    };
+
+    let (muted, amount_left) = match db_ref {
+        Some(Muted {
+            expires: Some(expires),
+            ..
+        }) => {
+            let amount_left = max(expires as i64 - now.timestamp(), 0);
+            (amount_left != 0, amount_left)
+        },
+        Some(Muted {
+            expires: None,
+            ..
+        }) => (true, -1),
+        None => (false, -1),
+    };
+
+    // let member = get_member(&ctx, guild_id, user_id).await?;
+    if muted {
+         // TODO: maybe deal with take roles
+        // if let Some(mut member) = member {
+        //     const ERROR_MARGIN: i64 = 5;
+        // }
+    }
+    // let muted = db_ref.map(|muted| {
+    //     muted.exp
+    // })
+    // let muted = if let Some(db_ref) = db_ref {
+    //     db_ref.
+    // }
+    Ok(())
+}
+
+// pub async fn unmute_moderation ...
+
+// Note: maybe just put this function inside an "async" block or something.
 pub async fn mute_moderation(
     ctx: &Context<'_>,
     member: &mut Member,
     config: &Mute,
-) -> Result<(bool, Vec<serenity::RoleId>), SerenityError> {
+) -> Result<(bool, Vec<serenity::RoleId>), Error> {
     let mute_role_id = config.role;
     let take = &config.take;
+    let http = &ctx.discord().http;
 
     let is_currently_muted = member.roles.iter().any(|r| r.0 == mute_role_id);
 
-    member.add_role(&ctx.discord().http, mute_role_id).await?;
+    member.add_role(http, mute_role_id).await?;
 
     // accumulate all roles to take from the member
     let removed_roles = member
@@ -382,7 +434,7 @@ pub async fn mute_moderation(
     // take them from the member.
     member
         .remove_roles(
-            &ctx.discord().http,
+            http,
             &take.iter().map(|&r| RoleId::from(r)).collect::<Vec<_>>(),
         )
         .await?;

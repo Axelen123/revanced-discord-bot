@@ -5,6 +5,7 @@ use mongodb::options::{
     ClientOptions,
     DeleteOptions,
     FindOneAndDeleteOptions,
+    FindOneOptions,
     FindOptions,
     InsertOneOptions,
     ResolverConfig,
@@ -63,6 +64,17 @@ impl Database {
         let cursor = self.open(collection).find(filter, options).await?;
 
         Ok(cursor)
+    }
+
+    pub async fn find_one<T: DeserializeOwned + Send + Sync + Unpin>(
+        &self,
+        collection: &str,
+        filter: Document,
+        options: Option<FindOneOptions>
+    ) -> Result<Option<T>, Box<dyn Error + Send + Sync>> {
+        let doc = self.open::<T>(collection).find_one(filter, options).await?;
+
+        Ok(doc)
     }
 
     pub async fn find_and_delete<T: DeserializeOwned>(
