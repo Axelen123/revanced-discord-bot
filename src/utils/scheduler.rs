@@ -2,26 +2,28 @@ use crate::*;
 use std::cmp::{min, max};
 use chrono::{DateTime, Utc, Duration};
 use tokio::spawn;
-use tokio::sync::Mutex;
+use std::sync::Arc;
 use tokio::time::sleep;
+use dashmap::DashMap;
 
+// TODO: should we cancel everything when `Scheduler` gets dropped?
 // There isn't a good library that serves our needs for this unfortunately.
 pub struct Scheduler {
-    // TODO: i need dashmap here or smth hhhhhh
-    items: HashMap<String, tokio::sync::Mutex<Item>>,
+    items: Arc<DashMap<String, Item>>,
 }
 
 fn time_left(timestamp: DateTime<Utc>) -> Duration {
     let now = Utc::now();
-    max((now - timestamp), Duration::zero())
+    max(now - timestamp, Duration::zero())
 }
 
 impl Scheduler {
-    pub async fn add(&mut self, at: DateTime<Utc>, item: impl Schedulable) {
+    pub async fn add(&self, at: DateTime<Utc>, item: impl Schedulable + 'static) {
         let id = item.id();
-        let handle = spawn(async {
+        let ptr = self.items.clone();
+        let handle = spawn(async move {
+            let mut datetime = at;
             loop {
-                let mut datetime = at;
                 let duration = time_left(datetime);
                 if duration.is_zero() {
                     break;
@@ -31,10 +33,10 @@ impl Scheduler {
                 if time_left(datetime).is_zero() {
                     break;
                 } else {
-                    let mut lock = self.items[&id].lock().await;
-                    match lock.inner.sync().await {
+                    let mut item = ptr.get_mut(&id).unwrap();
+                    match item.inner.sync().await {
                         Some(Update::Cancel) => {
-                            self.cancel(id);
+                            Self::_cancel(&ptr, id);
                             return;
                         },
                         Some(Update::Reschedule(v)) => {
@@ -47,15 +49,20 @@ impl Scheduler {
 
 
         });
-        self.items[&item.id()] = Mutex::new(Item {
+        self.items.insert(item.id(), Item {
             // at,
             inner: Box::new(item),
             handle,
         });
     }
 
-    pub fn cancel(&mut self, id: String) -> bool {
-        if let Some(item) = self.items.remove(&id) {
+    #[inline]
+    pub fn cancel(&self, id: String) -> bool {
+        Self::_cancel(&self.items, id)
+    }
+
+    fn _cancel(ptr: &DashMap<String, Item>, id: String) -> bool {
+        if let Some((_, item)) = ptr.remove(&id) {
             item.handle.abort();
             return true;
         }

@@ -1192,6 +1192,7 @@ dependencies = [
  "base64 0.21.0",
  "bson",
  "chrono",
+ "dashmap",
  "decancer",
  "dirs",
  "dotenv",
